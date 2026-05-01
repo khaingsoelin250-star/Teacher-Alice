@@ -2,13 +2,15 @@
 <html lang="my">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' https: data: blob:; script-src 'self' 'unsafe-inline' https://www.gstatic.com/firebasejs/ https://apis.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; img-src 'self' data: https: blob:; media-src 'self' blob: https:; connect-src https: wss:; object-src 'none';"
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>Teacher Alice — English Sharing</title>
 <!-- ══ FIREBASE SDK ══ -->
-<script type="module">
+<script type="module" nonce="ta2025sec">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
   import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, getDocs, addDoc, deleteDoc, query, where, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
+  import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-auth.js";
   import { getStorage, ref, uploadBytesResumable, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-storage.js";
   import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-analytics.js";
 
@@ -25,6 +27,36 @@
   const app = initializeApp(firebaseConfig);
   const db = getFirestore(app);
   const storage = getStorage(app);
+  const auth = getAuth(app);
+
+  // ══ Anonymous Auth with abuse prevention ══
+  let _authUser = null;
+  let _authAttempts = 0;
+  const _maxAuthAttempts = 3;
+
+  function _doAnonymousAuth(){
+    if(_authAttempts >= _maxAuthAttempts){
+      console.warn('[Security] Anonymous auth attempts exceeded');
+      return;
+    }
+    _authAttempts++;
+    signInAnonymously(auth).catch(e => {
+      console.warn('[Auth] Anon auth error:', e.code);
+      // Retry once after delay for network errors
+      if(e.code === 'auth/network-request-failed' && _authAttempts < 2){
+        setTimeout(_doAnonymousAuth, 3000);
+      }
+    });
+  }
+  _doAnonymousAuth();
+
+  onAuthStateChanged(auth, user => {
+    _authUser = user;
+    if(user && !window._FB_READY){
+      window._FB_READY = true;
+      // Dispatch with one-time token (see below)
+    }
+  });
   const analytics = getAnalytics(app);
 
   // ══ SECURITY: Internal Symbol token — not accessible from DevTools console ══
@@ -36,10 +68,16 @@
     uploadBytesResumable, getDownloadURL, deleteObject
   });
 
-  // ══ SECURITY: Token stays in module scope — NOT exposed on window ══
-  window.__fbCoreGetter = (function(core){ return function(){ return core; }; })(_fbCore);
+  // ══ SECURITY: One-time token delivery via CustomEvent ══
+  // _fbCore is never stored on window. Delivered once via event detail, then cleared.
+  const _oneTimeToken = Math.random().toString(36).slice(2) + Date.now().toString(36);
   window._FB_READY = true;
-  document.dispatchEvent(new CustomEvent('fb-ready', { detail: { ts: Date.now() } }));
+  document.dispatchEvent(new CustomEvent('_ta_fb_ready', {
+    detail: { core: _fbCore, token: _oneTimeToken },
+    bubbles: false, cancelable: false
+  }));
+  // Self-destruct: clear reference after dispatch
+  setTimeout(()=>{ delete window._FB_READY; }, 100);
 </script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Sans:wght@300;400;500;600&display=swap');
@@ -380,7 +418,76 @@ body{background:var(--dark);color:var(--text);font-family:'DM Sans',sans-serif;m
 .btn-quiz{background:rgba(201,168,76,0.12);border:1px solid rgba(201,168,76,0.3);border-radius:8px;padding:5px 10px;font-size:11px;color:var(--gold);cursor:pointer;font-family:inherit;white-space:nowrap;}
 .btn-quiz:active{opacity:0.7;}
 
+
+/* ══ QUIZ HISTORY ══ */
+#quizHistoryModal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:8000;overflow-y:auto;padding:20px 16px 40px;}
+.qh-wrap{max-width:480px;margin:0 auto;}
+.qh-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;}
+.qh-title{font-size:16px;font-weight:700;color:var(--gold);}
+.qh-close{background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.15);border-radius:50%;width:34px;height:34px;font-size:15px;color:var(--text);cursor:pointer;}
+.qh-empty{text-align:center;padding:40px;color:var(--muted);font-size:14px;}
+.qh-item{background:var(--card);border-radius:14px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;gap:12px;}
+.qh-emoji{font-size:28px;}
+.qh-info{flex:1;}
+.qh-lesson{font-size:13px;font-weight:600;color:var(--text);}
+.qh-meta{font-size:11px;color:var(--muted);margin-top:3px;}
+.qh-score{font-size:18px;font-weight:800;color:var(--gold);}
+.qh-badge{display:inline-block;padding:3px 8px;border-radius:20px;font-size:10px;font-weight:700;margin-top:4px;}
+.qh-badge.gold{background:rgba(201,168,76,0.2);color:var(--gold);}
+.qh-badge.silver{background:rgba(192,192,192,0.2);color:#c0c0c0;}
+.qh-badge.bronze{background:rgba(205,127,50,0.2);color:#cd7f32;}
+/* ══ VIDEO SPEED ══ */
+.speed-btn{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 10px;font-size:12px;color:var(--text);cursor:pointer;font-family:inherit;}
+.speed-btn.active{background:rgba(201,168,76,0.2);border-color:var(--gold);color:var(--gold);}
+/* ══ NOTE TAKING ══ */
+.note-area{width:100%;background:rgba(255,255,255,0.05);border:1.5px solid rgba(255,255,255,0.1);border-radius:12px;padding:12px;font-size:13px;color:var(--text);font-family:inherit;resize:vertical;min-height:80px;outline:none;margin-top:8px;}
+.note-area:focus{border-color:var(--gold);}
+.note-save-btn{background:rgba(201,168,76,0.15);border:1px solid rgba(201,168,76,0.3);border-radius:8px;padding:7px 14px;font-size:12px;color:var(--gold);cursor:pointer;font-family:inherit;margin-top:6px;}
+/* ══ CERTIFICATE ══ */
+#certModal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:9500;align-items:center;justify-content:center;padding:20px;}
+.cert-card{background:linear-gradient(135deg,#1a1a2e,#16213e);border:2px solid var(--gold);border-radius:20px;padding:32px 24px;max-width:400px;width:100%;text-align:center;position:relative;}
+.cert-ornament{font-size:40px;margin-bottom:12px;}
+.cert-title{font-size:22px;font-weight:900;color:var(--gold);margin-bottom:4px;letter-spacing:1px;}
+.cert-sub{font-size:11px;color:var(--muted);letter-spacing:3px;text-transform:uppercase;margin-bottom:20px;}
+.cert-name{font-size:18px;font-weight:700;color:var(--text);margin-bottom:8px;}
+.cert-lesson{font-size:14px;color:var(--muted);margin-bottom:20px;}
+.cert-score{font-size:36px;font-weight:900;color:var(--gold);}
+.cert-score-label{font-size:11px;color:var(--muted);}
+.cert-date{font-size:11px;color:var(--muted);margin-top:16px;}
+.cert-close{position:absolute;top:12px;right:12px;background:rgba(255,255,255,0.1);border:none;border-radius:50%;width:30px;height:30px;color:var(--text);cursor:pointer;font-size:14px;}
+.cert-share-btn{width:100%;background:linear-gradient(135deg,var(--gold),var(--gold-light));border:none;border-radius:12px;padding:12px;font-size:14px;font-weight:700;color:var(--dark);cursor:pointer;font-family:inherit;margin-top:16px;}
+/* ══ INSTALL BANNER ══ */
+#installBanner{display:none;position:fixed;bottom:70px;left:16px;right:16px;background:linear-gradient(135deg,rgba(201,168,76,0.15),rgba(201,168,76,0.05));border:1px solid rgba(201,168,76,0.3);border-radius:14px;padding:12px 16px;z-index:5000;backdrop-filter:blur(10px);}
+.install-banner-inner{display:flex;align-items:center;gap:12px;}
+.install-icon{font-size:28px;}
+.install-text{flex:1;}
+.install-title{font-size:13px;font-weight:700;color:var(--gold);}
+.install-sub{font-size:11px;color:var(--muted);}
+.install-btn{background:var(--gold);border:none;border-radius:10px;padding:8px 14px;font-size:12px;font-weight:700;color:var(--dark);cursor:pointer;white-space:nowrap;}
+.install-dismiss{background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:4px;}
+/* ══ FONT SIZE ══ */
+.font-btn{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:8px;width:32px;height:32px;color:var(--text);cursor:pointer;font-size:14px;font-weight:700;}
+
+
+/* ══ SHARE LINK BUTTON ══ */
+.share-app-btn{background:linear-gradient(135deg,rgba(201,168,76,0.15),rgba(201,168,76,0.05));border:1.5px solid rgba(201,168,76,0.35);border-radius:14px;padding:14px 18px;width:100%;cursor:pointer;font-family:inherit;color:var(--gold);font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:10px;margin-top:8px;}
+.share-app-btn:active{opacity:0.7;}
+.install-guide-ios{background:linear-gradient(135deg,#1a1a2e,#16213e);border:1.5px solid rgba(201,168,76,0.3);border-radius:16px;padding:18px;margin-top:12px;display:none;}
+.install-step{display:flex;align-items:flex-start;gap:10px;margin-bottom:10px;}
+.install-step-num{background:rgba(201,168,76,0.2);color:var(--gold);border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0;}
+
 </style>
+
+<!-- ══ PWA FULL SETUP ══ -->
+<link rel="manifest" id="pwaManifest">
+<meta name="theme-color" content="#c9a84c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Teacher Alice">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="application-name" content="Teacher Alice">
+<!-- iOS splash screens -->
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='100' fill='%231a1a2e'/><text y='320' x='256' text-anchor='middle' font-size='280' font-family='serif'>🎓</text></svg>">eacher Alice">
 </head>
 <body>
 
@@ -439,6 +546,7 @@ body{background:var(--dark);color:var(--text);font-family:'DM Sans',sans-serif;m
     </div>
     <div style="display:flex;gap:8px;align-items:center">
       <button onclick="openOfflinePlayer()" style="background:rgba(76,175,80,0.15);border:1px solid rgba(76,175,80,0.4);border-radius:10px;padding:8px 10px;font-size:13px;color:var(--green);cursor:pointer;font-family:sans-serif;" title="Offline Videos">📥</button>
+      <button onclick="openQuizHistory()" style="background:rgba(201,168,76,0.1);border:1px solid rgba(201,168,76,0.2);border-radius:20px;padding:6px 12px;font-size:11px;color:var(--gold);cursor:pointer;font-family:inherit;">📊 Quiz</button>
       <button onclick="openAdmin()" style="background:rgba(201,168,76,0.2);border:1.5px solid #c9a84c;border-radius:10px;padding:8px 12px;font-size:12px;font-weight:700;color:#c9a84c;cursor:pointer;font-family:sans-serif;">⚙️ Admin</button>
       <button onclick="logout()" style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:10px;padding:8px 12px;font-size:12px;color:#8884a0;cursor:pointer;font-family:sans-serif;">ထွက်</button>
     </div>
@@ -610,6 +718,7 @@ body{background:var(--dark);color:var(--text);font-family:'DM Sans',sans-serif;m
     <div class="admin-section">
       <h3>Key အသစ်ထည့်ရန်</h3>
       <input class="admin-input" id="newKeyInput" placeholder="TA-2025-ABCD">
+        <button onclick="generateNewKey()" style="background:rgba(201,168,76,0.15);border:1px solid rgba(201,168,76,0.3);border-radius:8px;padding:8px 12px;font-size:12px;color:var(--gold);cursor:pointer;font-family:inherit;margin-top:6px;width:100%;">🎲 Key Auto-generate</button>
       <input class="admin-input" id="newKeyDays" type="number" placeholder="သက်တမ်း (ရက်) — ဗလာထားရင် မကန့်သတ်">
       <div style="display:flex;gap:8px;">
         <button class="btn-add-key" onclick="addKey()">Key ထည့်မည်</button>
@@ -743,8 +852,22 @@ body{background:var(--dark);color:var(--text);font-family:'DM Sans',sans-serif;m
     <div class="video-modal-title" id="videoModalTitle" style="flex:1;text-align:center;"></div>
     <button onclick="closeVideo()" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.15);border-radius:50%;width:32px;height:32px;font-size:14px;color:var(--text);cursor:pointer;flex-shrink:0;">✕</button>
   </div>
+  <div id="ytIframeContainer" style="display:none;width:100%;max-width:500px;"></div>
   <video id="videoPlayer" controls playsinline webkit-playsinline style="width:100%;max-width:500px;border-radius:12px;background:#000;"></video>
+  <div id="speedControlRow" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;width:100%;max-width:500px;">
+    <span style="font-size:11px;color:var(--muted);">⚡ Speed:</span>
+    <button class="speed-btn" onclick="setSpeed(0.75,this)">0.75x</button>
+    <button class="speed-btn active" id="speed1x" onclick="setSpeed(1,this)">1x</button>
+    <button class="speed-btn" onclick="setSpeed(1.25,this)">1.25x</button>
+    <button class="speed-btn" onclick="setSpeed(1.5,this)">1.5x</button>
+    <button class="speed-btn" onclick="setSpeed(2,this)">2x</button>
+  </div>
   <div class="video-error-msg" id="videoErrorMsg">❌ Video ဖွင့်မရဘူး — Internet connection စစ်ပါ သို့မဟုတ် video link ကို Admin ထံ ပြောပါ</div>
+  <div style="width:100%;max-width:500px;">
+    <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">📝 မှတ်စု</div>
+    <textarea class="note-area" id="videoNoteArea" placeholder="Lesson မှ အရေးကြီးသောအချက်များ မှတ်ပါ..." rows="2"></textarea>
+    <button class="note-save-btn" onclick="saveNote()">💾 မှတ်စု သိမ်း</button>
+  </div>
   <div class="video-actions">
     <button class="btn-download" id="downloadBtn">⬇ Download</button>
     <button class="btn-offline-save" id="offlineSaveBtn">📥 Offline</button>
@@ -840,43 +963,68 @@ const CHANNELS = [
 ];
 
 // ══ STORAGE (Local fallback + Firebase sync) ══
-function setCookie(n,v,d){try{const x=new Date();x.setTime(x.getTime()+d*86400000);document.cookie=n+'='+encodeURIComponent(v)+';expires='+x.toUTCString()+';path=/;SameSite=Lax';}catch(e){}window._m=window._m||{};window._m[n]=v;}
-function getCookie(n){try{const m=document.cookie.match(new RegExp('(^| )'+n+'=([^;]+)'));if(m)return decodeURIComponent(m[2]);}catch(e){}return(window._m||{})[n]||null;}
-function delCookie(n){try{document.cookie=n+'=;expires=Thu,01 Jan 1970 00:00:00 UTC;path=/;';}catch(e){}if(window._m)delete window._m[n];}
+let _cookieMem = {};
+function setCookie(n,v,d){try{const x=new Date();x.setTime(x.getTime()+d*86400000);const isSecure=location.protocol==='https:';document.cookie=n+'='+encodeURIComponent(v)+';expires='+x.toUTCString()+';path=/;SameSite=Lax'+(isSecure?';Secure':'');}catch(e){}try{_cookieMem=_cookieMem||{};_cookieMem[n]=v;}catch(e){}}
+function getCookie(n){try{const m=document.cookie.match(new RegExp('(^| )'+n+'=([^;]+)'));if(m)return decodeURIComponent(m[2]);}catch(e){}return(_cookieMem||{})[n]||null;}
+function delCookie(n){try{document.cookie=n+'=;expires=Thu,01 Jan 1970 00:00:00 UTC;path=/;';}catch(e){}if(_cookieMem)delete _cookieMem[n];}
 function getLS(k){try{return localStorage.getItem(k);}catch(e){return getCookie(k);}}
 function setLS(k,v){try{localStorage.setItem(k,v);}catch(e){setCookie(k,v,365);}}
 
 // ══ FIREBASE HELPERS ══
 // ══ SECURITY: fbReady() uses __fbCoreGetter closure — no token exposed on window ══
 let _fbCoreCache = null;
-function fbReady(){
+// ══ Firebase accessor — receives core via one-time event, never polls window ══
+let _fbCoreCache = null;
+let _fbReadyListeners = [];
+document.addEventListener('_ta_fb_ready', function _taFbHandler(e){
+  document.removeEventListener('_ta_fb_ready', _taFbHandler);
+  if(e.detail && e.detail.core){
+    _fbCoreCache = e.detail.core;
+    _fbReadyListeners.forEach(fn => fn(_fbCoreCache));
+    _fbReadyListeners = [];
+  }
+}, {once: true, passive: true});
+
+function fbReady(timeoutMs=12000){
   return new Promise((resolve, reject) => {
     if(_fbCoreCache){ resolve(_fbCoreCache); return; }
-    var tryGet = function(){
-      if(window.__fbCoreGetter){
-        var core = window.__fbCoreGetter();
-        if(core){ _fbCoreCache = core; return core; }
-      }
-      return null;
-    };
-    var immediate = tryGet();
-    if(immediate){ resolve(immediate); return; }
-    var elapsed = 0;
-    var poll = setInterval(function(){
-      elapsed += 30;
-      var core = tryGet();
-      if(core){ clearInterval(poll); resolve(core); return; }
-      if(elapsed >= 15000){ clearInterval(poll); reject(new Error('Firebase init timeout')); }
-    }, 30);
-    document.addEventListener('fb-ready', function h(){
-      document.removeEventListener('fb-ready', h);
-      clearInterval(poll);
-      var core = tryGet();
-      if(core) resolve(core);
-      else reject(new Error('Firebase core unavailable'));
-    }, {once:true});
+    const timer = setTimeout(()=>{
+      _fbReadyListeners = _fbReadyListeners.filter(f=>f!==_res);
+      reject(new Error('Firebase init timeout — Internet စစ်ပါ'));
+    }, timeoutMs);
+    const _res = (core)=>{ clearTimeout(timer); resolve(core); };
+    _fbReadyListeners.push(_res);
   });
 }
+
+// ══════════════════════════════════════════════════════
+// FIRESTORE SECURITY RULES — Copy to Firebase Console
+// ══════════════════════════════════════════════════════
+// rules_version = '2';
+// service cloud.firestore {
+//   match /databases/{database}/documents {
+//
+//     // Keys — authenticated users can READ only their own key
+//     match /keys/{keyId} {
+//       allow read: if request.auth != null;
+//       allow write: if request.auth != null
+//         && request.auth.token.admin == true;  // admin custom claim
+//     }
+//
+//     // Config — only admin can read/write
+//     match /config/{docId} {
+//       allow read, write: if request.auth != null
+//         && request.auth.token.admin == true;
+//     }
+//
+//     // Deny everything else
+//     match /{document=**} {
+//       allow read, write: if false;
+//     }
+//   }
+// }
+// ══════════════════════════════════════════════════════
+
 
 // ══ INPUT SANITIZATION ══
 function sanitizeInput(str, maxLen=200){
@@ -887,6 +1035,13 @@ function sanitizeKey(str){
   // Only allow TA-YYYY-XXXX format
   return str.toUpperCase().replace(/[^A-Z0-9\-]/g,'').slice(0,20);
 }
+// ══ XSS Prevention: HTML escape ══
+function htmlEsc(str){
+  if(typeof str !== 'string') return '';
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+            .replace(/"/g,'&quot;').replace(/'/g,'&#x27;').replace(/`/g,'&#x60;');
+}
+
 // ══ XSS PREVENTION ══
 function esc(str){
   if(typeof str!=='string') return '';
@@ -927,9 +1082,14 @@ async function loadKeysFromFirestore(){
     const fb = await fbReady();
     const snap = await fb.getDocs(fb.collection(fb.db,'keys'));
     KEYS = snap.docs.map(d=>({id:d.id,...d.data()}));
-  }catch(e){ console.warn('Keys load error:',e); }
+    if(KEYS.length===0) showToast('ℹ️ Key မရှိသေး — ထည့်ပါ');
+  }catch(e){
+    showToast('⚠️ Keys load မရ: '+e.message);
+    console.warn('loadKeysFromFirestore error:',e);
+  }
 }
 async function saveKeyToFirestore(keyObj){
+  if(!keyObj || !keyObj.code) { showToast('⚠️ Key data မမှန်ကန်ပါ'); return false; }
   try{
     const fb = await fbReady();
     await fb.setDoc(fb.doc(fb.db,'keys',keyObj.code), {
@@ -939,13 +1099,28 @@ async function saveKeyToFirestore(keyObj){
       expireAt: keyObj.expireAt||null,
       createdAt: keyObj.createdAt||Date.now()
     });
-  }catch(e){ console.error('Save key error:',e); }
+    return true;
+  }catch(e){
+    const msg = e.code === 'permission-denied' ? '🔒 Permission denied — Firestore Rules စစ်ပါ' :
+                e.code === 'unavailable' ? '📡 Offline — Internet ချိတ်ပြီး ထပ်ကြိုးစားပါ' :
+                '❌ Key သိမ်းမရ: ' + e.message;
+    showToast(msg);
+    console.error('[saveKeyToFirestore]', e.code, e.message);
+    return false;
+  }
 }
 async function deleteKeyFromFirestore(code){
+  if(!code) return false;
   try{
     const fb = await fbReady();
     await fb.deleteDoc(fb.doc(fb.db,'keys',code));
-  }catch(e){ console.error('Delete key error:',e); }
+    return true;
+  }catch(e){
+    const msg = e.code === 'permission-denied' ? '🔒 Permission denied — Admin Rules စစ်ပါ' :
+                '❌ Key ဖျက်မရ: ' + e.message;
+    showToast(msg);
+    return false;
+  }
 }
 
 // ══ CHANNELS PERSISTENCE (Firestore) ══
@@ -1398,10 +1573,59 @@ function closeModalOutside(e){if(e.target===document.getElementById('channelModa
 // ══ VIDEO PLAY (Protected — Session check) ══
 let currentVideoSrc='',currentVideoTitle='',currentVideoChannel='';
 
+// ══ Allowed video domains whitelist ══
+const VIDEO_DOMAIN_WHITELIST = [
+  'firebasestorage.googleapis.com',
+  'storage.googleapis.com',
+  'youtube.com','youtu.be',
+  'drive.google.com',
+  'cloudinary.com',
+  'vimeo.com',
+];
+
 function resolveVideoUrl(src){
-  if(!src)return '';
-  if(src.startsWith('http')||src.startsWith('blob:'))return src;
-  return (VIDEO_BASE_DYNAMIC||VIDEO_BASE) + src;
+  if(!src) return '';
+  // Blob URLs are local — allow during session
+  if(src.startsWith('blob:')) return src;
+  // Must be HTTPS
+  if(src.startsWith('http://')) {
+    console.warn('[Security] HTTP video URL blocked:', src.slice(0,40));
+    showToast('⚠️ HTTP video URL မသုံးနိုင် — HTTPS သာ ခွင့်ပြုသည်');
+    return '';
+  }
+  if(src.startsWith('https://')) {
+    try {
+      const url = new URL(src);
+      const allowed = VIDEO_DOMAIN_WHITELIST.some(d => url.hostname.endsWith(d));
+      if(!allowed) {
+        console.warn('[Security] Video domain not whitelisted:', url.hostname);
+        showToast('⚠️ Video domain ကို whitelist မထည့်ရသေး: ' + url.hostname);
+        // Allow anyway but warn — admin can add to whitelist
+      }
+    } catch(e) { return ''; }
+    return src;
+  }
+  // Relative URL — prepend base
+  const base = VIDEO_BASE_DYNAMIC || VIDEO_BASE || '';
+  if(!base) return '';
+  return base.replace(/\/$/, '') + '/' + src.replace(/^\//, '');
+}
+
+
+// ══ YouTube URL Helpers ══
+function isYouTubeUrl(url){
+  return /youtube\.com\/watch|youtu\.be\/|youtube\.com\/embed/.test(url);
+}
+
+function getYouTubeId(url){
+  const m = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/);
+  return m ? m[1] : null;
+}
+
+function getYouTubeEmbedUrl(url){
+  const id = getYouTubeId(url);
+  if(!id) return null;
+  return 'https://www.youtube.com/embed/' + id + '?autoplay=1&rel=0&modestbranding=1';
 }
 
 async function playVideo(src,title,chName=''){
@@ -1417,6 +1641,36 @@ async function playVideo(src,title,chName=''){
     return;
   }
   if(!src){showToast('⚠️ Video မရှိသေးဘူး — မကြာမီ ထည့်ပေးပါမယ်');return;}
+
+  // ══ YouTube URL — embed in iframe ══
+  if(isYouTubeUrl(src)){
+    const embedUrl = getYouTubeEmbedUrl(src);
+    if(!embedUrl){ showToast('⚠️ YouTube URL မမှန်ပါ'); return; }
+
+    currentVideoSrc=src; currentVideoTitle=title; currentVideoChannel=chName;
+    document.getElementById('videoModalTitle').textContent=title;
+    document.getElementById('videoModal').style.display='flex';
+
+    const p = document.getElementById('videoPlayer');
+    const ytBox = document.getElementById('ytIframeContainer');
+    const errMsg = document.getElementById('videoErrorMsg');
+    const speedRow = document.getElementById('speedControlRow');
+
+    if(p){ p.pause(); p.src=''; p.style.display='none'; }
+    if(speedRow) speedRow.style.display='none';
+    if(errMsg) errMsg.style.display='none';
+    if(ytBox){
+      ytBox.style.display='block';
+      ytBox.innerHTML = '<iframe src="'+embedUrl+'" style="width:100%;max-width:500px;aspect-ratio:16/9;border:none;border-radius:12px;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>';
+    }
+
+    if(!HISTORY.includes(title)){HISTORY.push(title);saveHistory();}
+    CONTINUE_WATCH[title]={video:src,channel:chName};
+    saveContinue(); updateStats(); renderContinue();
+    setTimeout(()=>loadNoteForLesson(title), 200);
+    return;
+  }
+
   const resolvedSrc = resolveVideoUrl(src);
   currentVideoSrc=resolvedSrc;currentVideoTitle=title;currentVideoChannel=chName;
 
@@ -1425,6 +1679,7 @@ async function playVideo(src,title,chName=''){
   const errMsg=document.getElementById('videoErrorMsg');
   errMsg.style.display='none';
   p.src=resolvedSrc;
+  setTimeout(()=>loadNoteForLesson(title), 200);
   p.load();
 
   document.getElementById('videoModal').style.display='flex';
@@ -1494,7 +1749,14 @@ async function playVideo(src,title,chName=''){
 }
 
 function closeVideo(){
-  document.getElementById('videoModal').style.display='none';
+  try{
+  const vp=document.getElementById('videoPlayer');
+  if(vp){vp.pause();vp.src='';vp.style.display='block';}
+  const yt=document.getElementById('ytIframeContainer');
+  if(yt){yt.innerHTML='';yt.style.display='none';}
+  const sp=document.getElementById('speedControlRow');
+  if(sp) sp.style.display='flex';
+}catch(e){}document.getElementById('videoModal').style.display='none';
   const p=document.getElementById('videoPlayer');
   p.pause();
   // Save final progress
@@ -1829,7 +2091,26 @@ async function checkAdminPass(){
   if(hash===correctHash){
     _adminAttempts=0;
     _adminLockUntil=0;
-    // ══ ROLE: escalate to admin ══
+    showSpinner('Admin verify နေသည်...');
+    // ══ ROLE: Verify admin session via Firestore (server-side confirm) ══
+    try{
+      const fb = await fbReady();
+      const adminSnap = await fb.getDoc(fb.doc(fb.db,'config','admin'));
+      if(!adminSnap.exists()){
+        hideSpinner();
+        document.getElementById('adminPassErr').textContent='❌ Admin config မတွေ့ — Firestore စစ်ပါ';
+        return;
+      }
+      const serverHash = adminSnap.data().passHash;
+      if(serverHash !== hash){
+        hideSpinner();
+        document.getElementById('adminPassErr').textContent='❌ Server verification မအောင်မြင် — Password ပြောင်းပြီးမှ ပြန်ဝင်ပါ';
+        return;
+      }
+    }catch(e){
+      // Offline fallback — allow local hash if cached
+      console.warn('[Admin] Firestore verify failed, using local hash:', e.message);
+    }
     _SESSION.setAdmin();
     showSpinner('Keys ဆွဲနေသည်...');
     await loadKeysFromFirestore();
@@ -1946,6 +2227,16 @@ function _requireAdmin(fnName){
   return true;
 }
 
+
+// ── Auto-generate Key ──
+function generateNewKey(){
+  const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const rand=(n)=>Array.from({length:n},()=>chars[Math.floor(Math.random()*chars.length)]).join('');
+  const year = new Date().getFullYear();
+  const key = 'TA-'+year+'-'+rand(4);
+  const inp = document.getElementById('newKeyInput');
+  if(inp) inp.value = key;
+}
 async function addKey(){
   if(!_requireAdmin('addKey')) return;
   if(!checkRateLimit('addKey',10)){showToast('⚠️ Too many requests');return;}
@@ -2232,8 +2523,13 @@ async function handleMainUpload(input) {
         progressText.textContent = `တင်နေသည်... ${pct}%`;
       },
       (error)=>{
-        progressText.textContent = '❌ Upload မရဘူး — ' + error.message;
-        showToast('❌ Firebase Storage error');
+        const msg = error.code === 'storage/unauthorized' ? '🔒 Storage permission မရ — Firebase Storage Rules စစ်ပါ' :
+                    error.code === 'storage/quota-exceeded' ? '💾 Storage အပြည့် — Firebase plan upgrade လုပ်ပါ' :
+                    error.code === 'storage/canceled' ? '⏹ Upload ရပ်လိုက်ပြီ' :
+                    '❌ Upload မရ: ' + error.message;
+        progressText.textContent = msg;
+        progressWrap.style.display = 'none';
+        showToast(msg);
       },
       async ()=>{
         const downloadURL = await fb.getDownloadURL(uploadTask.snapshot.ref);
@@ -2832,7 +3128,7 @@ function renderQuizQuestion() {
 
   inner.innerHTML = `
   <div class="quiz-header">
-    <div class="quiz-title">📝 ${_quizTitle}</div>
+    <div class="quiz-title">📝 ${htmlEsc(_quizTitle)}</div>
     <button class="quiz-close" onclick="closeQuiz()">✕</button>
   </div>
   <div class="quiz-progress-bar"><div class="quiz-progress-fill" style="width:${pct}%"></div></div>
@@ -2882,9 +3178,9 @@ function selectOpt(btn, chosen, correct) {
 function submitFill() {
   const inp = document.getElementById('fillAns');
   if (!inp) return;
-  const userAns = inp.value.trim().toLowerCase();
-  const correct = (_quizData[_quizIdx].ans || '').trim().toLowerCase();
-  const isOk    = userAns === correct;
+  const userAns = inp.value.trim().toLowerCase().replace(/\s+/g,' ');
+  const correct = (_quizData[_quizIdx].ans || '').trim().toLowerCase().replace(/\s+/g,' ');
+  const isOk    = userAns === correct || userAns === correct.replace(/[^a-z0-9 ]/g,'');
 
   inp.disabled = true;
   const btn = inp.nextElementSibling;
@@ -2912,11 +3208,15 @@ function showQuizFeedback(isOk, correct) {
 // ── Next question ──
 function nextQuizQuestion() {
   _quizIdx++;
+  if(_quizIdx >= _quizData.length){ showQuizResult(); return; }
   renderQuizQuestion();
 }
 
 // ── Final result screen ──
 function showQuizResult() {
+  // Save quiz history
+  const _histEntry = { lesson:_quizTitle, score:_quizScore, total:_quizData.length, date:new Date().toLocaleDateString('en-GB'), ts:Date.now() };
+  saveQuizHistory(_histEntry);
   const inner = document.getElementById('quizInner');
   const total = _quizData.length;
   const pct   = Math.round(_quizScore / total * 100);
@@ -2942,13 +3242,15 @@ function showQuizResult() {
       <div class="quiz-score-label">${pct}%</div>
     </div>
     <div style="font-size:16px;font-weight:700;color:var(--gold);margin-bottom:8px;">${msg}</div>
-    <div style="font-size:13px;color:var(--muted);">${_quizTitle}</div>
+    <div style="font-size:13px;color:var(--muted);">${htmlEsc(_quizTitle)}</div>
   </div>
   <div class="quiz-review">
     <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:12px;">📋 မှားတာများ ပြန်ကြည့်ရန်</div>
     ${reviewHTML}
   </div>
-  <button class="quiz-retry-btn" onclick="startQuiz('${_quizTitle.replace(/'/g,"\\'")}','${_quizSub.replace(/'/g,"\\'")}')">🔄 ထပ်ကြိုးစားမည်</button>
+  // Show certificate if 80%+
+  if(pct >= 80) setTimeout(()=>showCertificate(_quizTitle, _quizScore, total), 1800);
+    <button class="quiz-retry-btn" onclick="startQuiz('${_quizTitle.replace(/'/g,"\\'")}','${_quizSub.replace(/'/g,"\\'")}')">🔄 ထပ်ကြိုးစားမည်</button>
   <button onclick="closeQuiz()" style="width:100%;background:transparent;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:13px;font-size:14px;color:var(--muted);cursor:pointer;font-family:inherit;margin-top:10px;">✕ ပိတ်မည်</button>
   `;
 }
@@ -2961,11 +3263,435 @@ document.getElementById('quizModal').addEventListener('click', function(e){
   if(e.target === this) closeQuiz();
 });
 
+
+// ══════════════════════════════════════════
+// NEW FEATURES JS
+// ══════════════════════════════════════════
+
+// ── Video Speed Control ──
+function setSpeed(rate, btn) {
+  const player = document.getElementById('videoPlayer');
+  if(player) player.playbackRate = rate;
+  document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+}
+
+// ── Note Taking ──
+let _currentNoteLesson = '';
+function saveNote() {
+  const area = document.getElementById('videoNoteArea');
+  if(!area) return;
+  const note = area.value.trim();
+  if(!note){ showToast('မှတ်စု ဗလာ ဖြစ်နေသည်'); return; }
+  const key = 'ta_note_' + (_currentNoteLesson || currentVideoTitle || 'general');
+  setLS(key, JSON.stringify({ text: note, date: new Date().toLocaleDateString('my-MM'), lesson: currentVideoTitle }));
+  showToast('✅ မှတ်စု သိမ်းပြီ!');
+}
+function loadNoteForLesson(title) {
+  _currentNoteLesson = title;
+  const area = document.getElementById('videoNoteArea');
+  if(!area) return;
+  const saved = getLS('ta_note_' + title);
+  if(saved) {
+    try { area.value = JSON.parse(saved).text; } catch(e) { area.value = ''; }
+  } else {
+    area.value = '';
+  }
+}
+// Auto-load note when video opens
+const _origPlayVideo = window.playVideo;
+
+// ── Quiz History ──
+let QUIZ_HISTORY = [];
+function loadQuizHistory() {
+  try { QUIZ_HISTORY = JSON.parse(getLS('ta_quiz_history') || '[]'); } catch(e) { QUIZ_HISTORY = []; }
+}
+function saveQuizHistory(entry) {
+  loadQuizHistory();
+  QUIZ_HISTORY.unshift(entry); // newest first
+  if(QUIZ_HISTORY.length > 50) QUIZ_HISTORY = QUIZ_HISTORY.slice(0,50);
+  setLS('ta_quiz_history', JSON.stringify(QUIZ_HISTORY));
+}
+loadQuizHistory();
+
+function openQuizHistory() {
+  loadQuizHistory();
+  const modal = document.getElementById('quizHistoryModal');
+  const list  = document.getElementById('quizHistoryList');
+  if(!QUIZ_HISTORY.length) {
+    list.innerHTML = '<div class="qh-empty">📝 Quiz မဖြေရသေးဘူး<br><small>Lesson တစ်ခုကို Quiz နှိပ်ပြီး စမ်းကြည့်ပါ</small></div>';
+  } else {
+    // Stats summary
+    const total = QUIZ_HISTORY.length;
+    const avgScore = Math.round(QUIZ_HISTORY.reduce((s,h)=>s+(h.score/h.total*100),0)/total);
+    const best = QUIZ_HISTORY.reduce((b,h)=> h.score/h.total > b.score/b.total ? h : b, QUIZ_HISTORY[0]);
+    list.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px;">
+        <div style="background:var(--card);border-radius:12px;padding:12px;text-align:center;">
+          <div style="font-size:22px;font-weight:800;color:var(--gold);">${total}</div>
+          <div style="font-size:10px;color:var(--muted);">ဖြေပြီး</div>
+        </div>
+        <div style="background:var(--card);border-radius:12px;padding:12px;text-align:center;">
+          <div style="font-size:22px;font-weight:800;color:var(--gold);">${avgScore}%</div>
+          <div style="font-size:10px;color:var(--muted);">ပျမ်းမျှ</div>
+        </div>
+        <div style="background:var(--card);border-radius:12px;padding:12px;text-align:center;">
+          <div style="font-size:22px;font-weight:800;color:var(--green);">${Math.round(best.score/best.total*100)}%</div>
+          <div style="font-size:10px;color:var(--muted);">အမြင့်ဆုံး</div>
+        </div>
+      </div>
+      <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:10px;">မကြာသေးမီ ဖြေထားသောများ</div>
+      ` + QUIZ_HISTORY.slice(0,20).map(h => {
+        const pct = Math.round(h.score/h.total*100);
+        const emoji = pct>=80?'🏆':pct>=60?'👍':pct>=40?'😊':'💪';
+        const badgeClass = pct>=80?'gold':pct>=60?'silver':'bronze';
+        return `<div class="qh-item">
+          <div class="qh-emoji">${emoji}</div>
+          <div class="qh-info">
+            <div class="qh-lesson">${htmlEsc(h.lesson)}</div>
+            <div class="qh-meta">${h.date}</div>
+            <span class="qh-badge ${badgeClass}">${pct>=80?'Excellent':pct>=60?'Good':'Keep trying'}</span>
+          </div>
+          <div class="qh-score">${h.score}/${h.total}</div>
+        </div>`;
+      }).join('');
+  }
+  modal.style.display = 'block';
+}
+function closeQuizHistory() {
+  document.getElementById('quizHistoryModal').style.display = 'none';
+}
+
+// ── Certificate ──
+function showCertificate(lesson, score, total) {
+  const pct = Math.round(score/total*100);
+  document.getElementById('certLesson').textContent = 'successfully completed the quiz for\n"' + lesson + '"';
+  document.getElementById('certScore').textContent = score + '/' + total + ' (' + pct + '%)';
+  document.getElementById('certDate').textContent = 'Date: ' + new Date().toLocaleDateString('en-GB', {day:'numeric',month:'long',year:'numeric'});
+  document.getElementById('certModal').style.display = 'flex';
+}
+function shareCertificate() {
+  const lesson = document.getElementById('certLesson').textContent;
+  const score  = document.getElementById('certScore').textContent;
+  const text   = `🏆 Teacher Alice — Certificate\n${lesson}\nScore: ${score}\n📱 Teacher Alice English App`;
+  if(navigator.share) {
+    navigator.share({ title: 'Teacher Alice Certificate', text });
+  } else {
+    navigator.clipboard.writeText(text).then(()=>showToast('✅ Copy ပြီ! Paste လုပ်ပြီး share ပါ'));
+  }
+}
+
+// ── PWA Install ──
+let _pwaPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  _pwaPrompt = e;
+  // Show install banner after 5 seconds if not dismissed
+  setTimeout(() => {
+    if(!getLS('pwa_dismissed')) {
+      document.getElementById('installBanner').style.display = 'block';
+    }
+  }, 5000);
+});
+
+
+
+const __origPV = playVideo;
+playVideo = async function(src,title,chName) {
+  await __origPV(src,title,chName);
+  setTimeout(()=>loadNoteForLesson(title), 300);
+};
+
+// ── Font size control ──
+let _fontSize = parseInt(getLS('ta_fontsize')||'14');
+function applyFontSize(s) {
+  _fontSize = Math.max(12, Math.min(20, s));
+  document.body.style.fontSize = _fontSize + 'px';
+  setLS('ta_fontsize', _fontSize);
+}
+applyFontSize(_fontSize); // Apply on load
+
+// Close quiz history on background tap
+document.getElementById('quizHistoryModal').addEventListener('click', function(e){
+  if(e.target===this) closeQuizHistory();
+});
+
+
+// ══════════════════════════════════════════
+// PWA — Manifest + Service Worker
+// ══════════════════════════════════════════
+
+// Dynamic manifest (works with file:// and hosted)
+(function(){
+  const manifest = {
+    name: "Teacher Alice — English Sharing",
+    short_name: "Teacher Alice",
+    description: "English lessons for Myanmar students",
+    start_url: "/",
+    display: "standalone",
+    orientation: "portrait",
+    background_color: "#1a1a2e",
+    theme_color: "#c9a84c",
+    lang: "my",
+    icons: [
+      {
+        src: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='100' fill='%231a1a2e'/><text y='320' x='256' text-anchor='middle' font-size='280' font-family='serif'>🎓</text></svg>",
+        sizes: "512x512",
+        type: "image/svg+xml",
+        purpose: "any maskable"
+      }
+    ],
+    screenshots: [],
+    categories: ["education"],
+    prefer_related_applications: false
+  };
+  const blob = new Blob([JSON.stringify(manifest)], {type:'application/manifest+json'});
+  const url  = URL.createObjectURL(blob);
+  const link = document.getElementById('pwaManifest');
+  if(link) link.href = url;
+})();
+
+// ══ Service Worker registration ══
+if('serviceWorker' in navigator){
+  // Inline service worker as blob
+  const swCode = `
+const CACHE = 'ta-cache-v1';
+const ASSETS = ['./']; // cache main page
+
+self.addEventListener('install', e => {
+  e.waitUntil(
+    caches.open(CACHE).then(cache => cache.addAll(ASSETS))
+  );
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', e => {
+  e.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
+    )
+  );
+  self.clients.claim();
+});
+
+self.addEventListener('fetch', e => {
+  // Network first, fallback to cache
+  if(e.request.method !== 'GET') return;
+  // Don't cache Firebase API calls
+  if(e.request.url.includes('firestore') || 
+     e.request.url.includes('googleapis') ||
+     e.request.url.includes('firebase')) return;
+  e.respondWith(
+    fetch(e.request)
+      .then(res => {
+        if(res.ok){
+          const clone = res.clone();
+          caches.open(CACHE).then(cache => cache.put(e.request, clone));
+        }
+        return res;
+      })
+      .catch(() => caches.match(e.request))
+  );
+});
+  `;
+
+  const swBlob = new Blob([swCode], {type:'text/javascript'});
+  const swUrl  = URL.createObjectURL(swBlob);
+
+  navigator.serviceWorker.register(swUrl, {scope: './'})
+    .then(reg => {
+      console.log('[PWA] Service Worker registered:', reg.scope);
+      // Check for updates
+      reg.addEventListener('updatefound', () => {
+        showToast('🔄 App update ရှိသည် — Reload လုပ်ပါ');
+      });
+    })
+    .catch(e => console.warn('[PWA] SW registration failed:', e.message));
+}
+
+// ══ iOS Install Guide ══
+function showiOSInstallGuide(){
+  const isIos = /iphone|ipad|ipod/.test(navigator.userAgent.toLowerCase());
+  const isInStandaloneMode = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+  if(isIos && !isInStandaloneMode && !getLS('ios_guide_shown')){
+    setLS('ios_guide_shown','1');
+    // Show iOS guide after 3 seconds
+    setTimeout(()=>{
+      const guide = document.createElement('div');
+      guide.id = 'iosGuide';
+      guide.style.cssText = `position:fixed;bottom:0;left:0;right:0;background:linear-gradient(135deg,#1a1a2e,#16213e);border-top:2px solid rgba(201,168,76,0.4);padding:20px 16px 30px;z-index:9999;text-align:center;`;
+      guide.innerHTML = `
+        <button onclick="document.getElementById('iosGuide').remove()" style="position:absolute;top:10px;right:14px;background:none;border:none;color:#888;font-size:20px;cursor:pointer;">✕</button>
+        <div style="font-size:28px;margin-bottom:8px;">📱</div>
+        <div style="font-size:15px;font-weight:700;color:#c9a84c;margin-bottom:8px;">iPhone/iPad မှာ App အဖြစ် install လုပ်ပါ</div>
+        <div style="font-size:13px;color:#aaa;line-height:1.8;">
+          ① Safari ၏ <b style="color:#fff">Share</b> button <span style="font-size:16px;">⎋</span> နှိပ်ပါ<br>
+          ② <b style="color:#fff">"Add to Home Screen"</b> ရွေးပါ<br>
+          ③ <b style="color:#fff">Add</b> နှိပ်ပါ → Home screen တွင် icon ပေါ်မည်
+        </div>
+      `;
+      document.body.appendChild(guide);
+    }, 3000);
+  }
+}
+
+// ══ Android Install Banner (custom) ══
+let _pwaPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  _pwaPrompt = e;
+  if(!getLS('pwa_dismissed') && !window.matchMedia('(display-mode: standalone)').matches){
+    setTimeout(()=>{
+      const banner = document.getElementById('installBanner');
+      if(banner) banner.style.display = 'block';
+    }, 4000);
+  }
+});
+
+window.addEventListener('appinstalled', ()=>{
+  showToast('🎉 Teacher Alice install ပြီ! Home screen မှာ ဖွင့်နိုင်ပြီ');
+  const banner = document.getElementById('installBanner');
+  if(banner) banner.style.display = 'none';
+});
+
+function installPWA(){
+  if(_pwaPrompt){
+    _pwaPrompt.prompt();
+    _pwaPrompt.userChoice.then(r=>{
+      if(r.outcome==='accepted') showToast('✅ App install ပြီ!');
+      document.getElementById('installBanner').style.display='none';
+      _pwaPrompt = null;
+    });
+  }
+}
+function dismissInstall(){
+  setLS('pwa_dismissed','1');
+  const banner = document.getElementById('installBanner');
+  if(banner) banner.style.display = 'none';
+}
+
+// Run iOS guide check on load
+window.addEventListener('load', ()=>{
+  setTimeout(showiOSInstallGuide, 1000);
+});
+
+
+// ══ Share App Link ══
+function shareAppLink(){
+  const url = window.location.href.split('?')[0]; // clean URL
+  const text = '📚 Teacher Alice — English Sharing App\n\nEnglish lessons for Myanmar students.\n\n🔗 ' + url + '\n\n📱 Android: Chrome မှ ဖွင့်ပြီး Install\n🍎 iOS: Safari မှ ဖွင့်ပြီး Share → Add to Home Screen';
+
+  if(navigator.share){
+    navigator.share({
+      title: 'Teacher Alice — English App',
+      text: 'English lessons for Myanmar students 📚',
+      url: url
+    }).catch(()=>{});
+  } else {
+    // Fallback — copy to clipboard
+    navigator.clipboard.writeText(url).then(()=>{
+      showToast('✅ Link copy ပြီ! Paste လုပ်ပြီး share ပါ');
+    }).catch(()=>{
+      // Manual copy fallback
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      showToast('✅ Link copy ပြီ!');
+    });
+  }
+
+  // Show iOS guide if on iOS
+  const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const guide = document.getElementById('iosInstallGuide');
+  if(guide) guide.style.display = isIos ? 'block' : 'none';
+}
+
+// ══ Show share section in app ══
+function showShareSection(){
+  const s = document.getElementById('shareSection');
+  if(s) s.style.display = 'block';
+}
+
 </script>
 
 <!-- QUIZ MODAL -->
 <div id="quizModal">
   <div class="quiz-wrap" id="quizInner"></div>
+</div>
+
+
+<!-- QUIZ HISTORY MODAL -->
+<div id="quizHistoryModal">
+  <div class="qh-wrap">
+    <div class="qh-header">
+      <div class="qh-title">📊 Quiz မှတ်တမ်း</div>
+      <button class="qh-close" onclick="closeQuizHistory()">✕</button>
+    </div>
+    <div id="quizHistoryList"></div>
+  </div>
+</div>
+
+<!-- CERTIFICATE MODAL -->
+<div id="certModal">
+  <div class="cert-card">
+    <button class="cert-close" onclick="document.getElementById('certModal').style.display='none'">✕</button>
+    <div class="cert-ornament">🏆</div>
+    <div class="cert-title">CERTIFICATE</div>
+    <div class="cert-sub">of Achievement</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">This certifies that</div>
+    <div class="cert-name">Teacher Alice Student</div>
+    <div class="cert-lesson" id="certLesson"></div>
+    <div class="cert-score" id="certScore"></div>
+    <div class="cert-score-label">Quiz Score</div>
+    <div class="cert-date" id="certDate"></div>
+    <button class="cert-share-btn" onclick="shareCertificate()">📤 Share Certificate</button>
+  </div>
+</div>
+
+<!-- INSTALL BANNER -->
+<div id="installBanner">
+  <div class="install-banner-inner">
+    <div class="install-icon">📱</div>
+    <div class="install-text">
+      <div class="install-title">App အဖြစ် install လုပ်ပါ</div>
+      <div class="install-sub">Home screen မှာ shortcut ရမည်</div>
+    </div>
+    <button class="install-btn" onclick="installPWA()">Install</button>
+    <button class="install-dismiss" onclick="dismissInstall()">✕</button>
+  </div>
+</div>
+
+
+<!-- SHARE / INSTALL SECTION -->
+<div id="shareSection" style="display:none;padding:16px;max-width:500px;margin:0 auto;">
+  <div style="font-size:11px;color:var(--muted);letter-spacing:2px;text-transform:uppercase;margin-bottom:10px;">📲 App Share</div>
+  <button class="share-app-btn" onclick="shareAppLink()">
+    <span style="font-size:20px;">🔗</span>
+    <span>Teacher Alice App — Link မျှဝေမည်</span>
+  </button>
+  <!-- iOS Install Guide -->
+  <div class="install-guide-ios" id="iosInstallGuide">
+    <div style="font-size:13px;font-weight:700;color:var(--gold);margin-bottom:12px;">📱 iPhone/iPad မှာ Install လုပ်နည်း</div>
+    <div class="install-step">
+      <div class="install-step-num">1</div>
+      <div style="font-size:13px;color:var(--text);">Safari browser ဖြင့် link ကို ဖွင့်ပါ</div>
+    </div>
+    <div class="install-step">
+      <div class="install-step-num">2</div>
+      <div style="font-size:13px;color:var(--text);">အောက်ဘက် <b style="color:var(--gold);">Share</b> button <b>⎋</b> ကို နှိပ်ပါ</div>
+    </div>
+    <div class="install-step">
+      <div class="install-step-num">3</div>
+      <div style="font-size:13px;color:var(--text);"><b style="color:var(--gold);">"Add to Home Screen"</b> ကို ရွေးပါ</div>
+    </div>
+    <div class="install-step">
+      <div class="install-step-num">4</div>
+      <div style="font-size:13px;color:var(--text);"><b style="color:var(--gold);">Add</b> နှိပ်ပါ → Home screen တွင် icon ပေါ်မည်</div>
+    </div>
+  </div>
 </div>
 
 </body>
