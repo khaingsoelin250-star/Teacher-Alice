@@ -988,11 +988,12 @@ function setLS(k,v){try{localStorage.setItem(k,v);}catch(e){setCookie(k,v,365);}
 // ══ FIREBASE HELPERS ══
 // ══ SECURITY: fbReady() uses event-based delivery — no token exposed on window ══
 let _fbCoreCache = null;
-// ══ Firebase accessor — receives core via one-time event, never polls window ══
+// ══ Firebase accessor — secure event-based delivery ══
 let _fbCoreCache = null;
 let _fbReadyListeners = [];
+
+// Listen for Firebase core delivery from module script
 document.addEventListener('_ta_fb_ready', function _taFbHandler(e){
-  document.removeEventListener('_ta_fb_ready', _taFbHandler);
   if(e.detail && e.detail.core){
     _fbCoreCache = e.detail.core;
     _fbReadyListeners.forEach(fn => fn(_fbCoreCache));
@@ -1002,10 +1003,12 @@ document.addEventListener('_ta_fb_ready', function _taFbHandler(e){
 
 function fbReady(timeoutMs=12000){
   return new Promise((resolve, reject) => {
+    // Already cached
     if(_fbCoreCache){ resolve(_fbCoreCache); return; }
+    // Set timeout
     const timer = setTimeout(()=>{
       _fbReadyListeners = _fbReadyListeners.filter(f=>f!==_res);
-      reject(new Error('Firebase init timeout — Internet စစ်ပါ'));
+      reject(new Error('timeout'));
     }, timeoutMs);
     const _res = (core)=>{ clearTimeout(timer); resolve(core); };
     _fbReadyListeners.push(_res);
